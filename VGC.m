@@ -15,36 +15,21 @@ end
 
 % Tworzenie wektora czasu
 T = length(x)/fs;      
-t = 0: 1/fs : T - 1/fs;     
-
-% Plot
-figure;
-subplot(311);
-plot(t, x, 'b');
-title("Sygnał wejsciowy"); grid;
-
-subplot(312);
-plot(t, x, 'b');
-title("Zoom - głoska dźwięczna"); grid;
-xlim([3.3411 3.3796]); ylim([-0.65 0.65]);
-
-
-subplot(313);
-plot(t, x, 'b');
-title("Zoom - głoska bezdźwięczna"); grid;
-xlim([1.0411 1.0796]); ylim([-0.65 0.65]);
-%}
+t = 0: 1/fs : T - 1/fs;   
 
 % Preemfaza sygnału. Równomierne skupienie mocy sygnalu w zależności od
 % częstotliwości
-%x = filter([1 -0.9735], 1, x);        
+x = filter([1 -0.9735], 1, x);        
 
-out = [];                                                       % Pusty buffor na zmieniony sygnał wejściowy
-predict = 10;                                                   % Liczba współczynników filtra LPC. Wystarcza tylko 5 (dodatkowe 5 to sprzężenia, aby uniknąć liczb zespolonych)
-step = 180;                                                     % Długość bloku próbek
-windowSize = 240;                                               % Długość stosowanego okna, większy niż ilość poróbek
-frames = floor((length(x) - windowSize) / step + 1);            % Liczba operacji analizy i syntezy do wykonania
-ratioFormant = 1/0.87;                                          % Stosunek próbki wejściowej do wyjściowej w al. AOLA - przedłużenie sygnału
+out = [];                                               % Pusty buffor na zmieniony sygnał wejściowy
+nPred = 10;                                             % Liczba współczynników filtra LPC. Wystarcza tylko 5 (dodatkowe 5 to sprzężenia, aby uniknąć liczb zespolonych)
+step = 180;                                             % Długość bloku próbek
+windowSize = 240;                                       % Długość stosowanego okna, większy niż ilość poróbek
+frames = floor((length(x) - windowSize) / step + 1);    % Liczba operacji analizy i syntezy do wykonania
+
+% Paramentry konwersji
+fRatio = 0.83;                                          % Oczekiwana częstotliwosć zgłosek w stosunku do sygnału wejściowego - współczynnik skalujący
+pRatio = 0.65;                                          % Nowa częstotliwość pików
 
 
 for i = 1 : frames
@@ -54,55 +39,74 @@ for i = 1 : frames
     bx = x(n);
     
     % Okienkowanie sygnału
-    bx = bx.*(hamming(windowSize)');
+    %bx = bx.*hamming(windowSize)';
     
     %% Analiza: wyznaczanie parametrów sygnału
     
-    % Usunięcie wartości średniej                                                                           
-    bx = bx - mean(bx);
+    % IMPLEMENTACJA ALGORYTMU AOLA
+    %
+    % Przedlużenie lub skrócenie sygnału bez wpływu na jego częstotliwość.
+    % Dodatkowym atutem algorytmu AOLA jest zachowanie ciągłości sygnału
     
+    refBuff = bx;                                       % Buffor referencyjny, stan początkowy
+    ratio = length(bx)/ length(refBuff);                % Zawsze == 1 ale zapisane w ten sposób, aby podkreślić znaczenie
     
-    %   IMPLEMENTACJA ALGORYTMU AOLA
-    
-    refBuff = bx;                                   % buffor referencyjny, stan początkowy
-    ratio = 1;
-    
-    figure(1);
-    subplot(211);
-    plot(bx);
-    xlabel("Buffor przed AOLA");
-    
-    while ratio < ratioFormant
-        % Zastosowanie właściwości autokorelacji w celu znalezienia kolejnych
-        % harmonicznych. Wykorzystanie właściwości, że pobudzenie dźwięczne
-        % pojawia się w określonych okresie charakterystycznym dla danego głosu
-        r = xcorr(bx); r = r( floor(length(r) / 2) : end);
-
-        % Szukanie głoski dźwięcznej                                                                           
-        offset = 20;                                % Offset w celu ominięcia stałej
-        rMax = max(r(offset : end));                % Znalezienie najwyższego piku zaraz po stałej
-        iMax = find(r == rMax);                     % Pobranie indeksu maximum (kandydat na pobudzenie dźwięczne)
-
-        sufix = bx(end - iMax : end);               % Obliczenie sufixu
-        bx = [bx sufix];                            % Przedłużenie sygnału
-        ratio = length(bx)/length(refBuff);
+    if fRatio < 1                                       % Konwersja damsko-męska
+        while ratio > fRatio                            
+            bx = AOLA(bx, 'reverse');
+            ratio = length(bx) / length(refBuff);
+        end
+    else                                                % Konwersja męsko-damska
+        while ratio < fRatio                            
+            bx = AOLA(bx);
+            ratio = length(bx) / length(refBuff);
+        end
     end
-    subplot(212);
-    plot(bx);
-    xlabel("Buffor po AOLA");
-    pause; clf(1);
+    
+    % LINIOWE KODOWANIE PREDYKCYJNE (LPC)
+    %
+    % Filtracja LPC ma na celu odseparowanie informacji o barwie głosu  i 
+    % jego intonacji od informacji o mowie i amplitudzie
+    
+    [a,g] = lpc(bx, nPred);
+    
+    bx = filter(1, a, bx);
+    
+    % Znowu AOLA 
+    
+    ratio = 1;
+    refbuff = bx;
+    if pRatio / fRatio < 1                              % Konwersja damsko-męska
+        while ratio > pRatio / fRatio                            
+            bx = AOLA(bx, 'reverse');
+            ratio = length(bx) / length(refBuff);
+        end
+    else                                                % Konwersja męsko-damska
+        while ratio < pRatio / fRatio                            
+            bx = AOLA(bx);
+            ratio = length(bx) / length(refBuff);
+        end
+    end
+    
+    bx = filter(a, 1, bx);
+    
+    out = [out bx];
 end
 
-disp("end");
 % Deemfaza sygnału - odwrócenie wejściowego filtra preemfazy
-%out = filter(1, [1 -0.9735], out);
+out = filter(1, [1 -0.9735], out);
 
-%out = out / max(out);                           % Normowanie 
+%%
+
+figure(2);
+subplot(211);
+plot(0: 1/fs : length(x)/fs - 1/fs, x);
+subplot(212);
+fs = pRatio / fRatio * fs;
+plot(0: 1/fs : length(out)/fs - 1/fs, out);
 
 
-
-
-
+%soundsc(out, fs);
 
 
 

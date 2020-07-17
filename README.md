@@ -1,3 +1,3 @@
 # Voice-gender-conversion
 
-I am having fun and trying to change voice gender
+Próbuję dokonać konwersji mowy damskiej na męską i dobrze sie przy tym bawić
